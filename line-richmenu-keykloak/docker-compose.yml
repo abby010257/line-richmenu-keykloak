@@ -1,0 +1,85 @@
+version: '3.8'
+
+services:
+  # Keycloak (保留你原本名稱 keycloak-line)
+  keycloak-line:
+    image: quay.io/keycloak/keycloak:26.4.2
+    container_name: keycloak-line
+    command: start-dev
+    environment:
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+      KC_HTTP_PORT: "8080"
+      KC_PROXY: "edge"
+      # KC_HOSTNAME 改為從 .env 注入 (請填入 https://your-ngrok-domain)
+      KC_HOSTNAME: "https://genie-unfussing-persuadingly.ngrok-free.dev"
+      KC_HOSTNAME_ADMIN_URL: "https://genie-unfussing-persuadingly.ngrok-free.dev"
+      KC_HOSTNAME_STRICT_HTTPS: "true"
+      KC_HOSTNAME_STRICT: "true"
+      # 為 Keycloak 指示使用 forwarded headers
+      KC_PROXY_HEADERS: "forwarded"
+    ports:
+      - "8180:8080"   # 方便你本機直接訪問 (可保留)
+    networks:
+      - sso-net
+    depends_on:
+      - openldap-line
+    volumes:
+      - keycloak-data:/opt/keycloak/data
+
+  # OpenLDAP (模擬 AD)
+  openldap-line:
+    image: osixia/openldap:latest
+    container_name: openldap-line
+    environment:
+      LDAP_DOMAIN: omnia.com
+      LDAP_ORGANISATION: omnia
+      LDAP_ADMIN_PASSWORD: admin
+    ports:
+      - "389:389"
+    networks:
+      - sso-net
+    volumes:
+      - ldap-data:/var/lib/ldap
+      - ldap-config:/etc/ldap/slapd.d
+
+  # Node.js LINE Webhook + LIFF server
+  linebot:
+    build:
+      context: ./linebot
+      dockerfile: Dockerfile
+    container_name: linebot
+    env_file:
+      - ./.env
+    networks:
+      - sso-net
+    depends_on:
+      - keycloak-line
+      - openldap-line
+    volumes:
+      - ./linebot/database:/app/database
+
+  # Nginx Reverse Proxy (ngrok 只要 expose nginx 的 80/443)
+  nginx:
+    image: nginx:stable
+    container_name: nginx_reverse_proxy
+    ports:
+      - "80:80"
+      # 若要讓 ngrok 使用 HTTPS，若使用 ngrok https 443 -> 可映射 443
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    networks:
+      - sso-net
+    depends_on:
+      - keycloak-line
+      - linebot
+
+volumes:
+  keycloak-data:
+  ldap-data:
+  ldap-config:
+
+networks:
+  sso-net:
+    driver: bridge

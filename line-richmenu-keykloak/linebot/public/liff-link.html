@@ -1,0 +1,114 @@
+<!-- 原本直接呼叫 /app/api/bind-line 的模擬綁定流程，改為顯示「綁定按鈕」，按下後帶 lineUserId 到 /app/start-bind。 -->
+
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LINE 綁定驗證</title>
+  <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+  <style>
+    body { font-family: system-ui, sans-serif; background: #f6f7fb; color: #333; text-align: center; padding: 40px 10px; }
+    .card { background: white; border-radius: 12px; padding: 20px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); display: inline-block; text-align: left; width: 90%; max-width: 400px; }
+    img { border-radius: 50%; width: 80px; height: 80px; margin: 10px auto; display: block; }
+    pre { background: #f1f1f1; border-radius: 8px; padding: 10px; text-align: left; white-space: pre-wrap; word-wrap: break-word; font-size: 13px; }
+    .btn { display:inline-block; padding:10px 16px; border-radius:8px; background:#2ea44f; color:#fff; text-decoration:none; }
+  </style>
+</head>
+<body>
+  <h2>🔗 LINE 綁定驗證</h2>
+  <div id="profile" class="card" style="display:none;">
+    <img id="picture" src="" alt="Profile Picture" />
+    <h3 id="name"></h3>
+    <div id="bind-area" style="margin-top:10px;"></div>
+  </div>
+
+  <pre id="result">載入中...</pre>
+  <button id="closeBtn" class="btn">關閉視窗</button>
+  <p id="bindResult"></p>
+
+  <script>
+  const LIFF_ID = "2008435803-rJRMBOEA";
+  const REDIRECT_URL = "https://genie-unfussing-persuadingly.ngrok-free.dev/app/liff-link.html";
+
+  if (new URL(location.href).searchParams.get("bind") === "success") {
+    const resultEl = document.getElementById("result");
+    resultEl.innerHTML = "🎉 綁定成功！<br>3 秒後將自動返回 LINE";
+    setTimeout(() => {
+      window.location.href = "https://line.me/";
+    }, 3000);
+    // 不進入後面 LIFF login 流程
+  }else{
+    initLiff();
+  }
+  
+  async function initLiff() {
+    try {
+      await liff.init({ liffId: LIFF_ID });
+      logToScreen("✅ LIFF 初始化成功");
+
+      const isInLineApp = liff.isInClient();
+      logToScreen("📱 是否在 LINE App 內:", isInLineApp);
+
+      if (!isInLineApp && !liff.isLoggedIn()) {
+        logToScreen("🌐 外部登入流程啟動...");
+        liff.login({ redirectUri: REDIRECT_URL });
+        return;
+      }
+
+      const accessToken = liff.getAccessToken();
+      if (!accessToken) {
+        document.getElementById("result").textContent = "⚠️ 無法取得 access_token";
+        return;
+      }
+      logToScreen("🔑 取得 accessToken:", accessToken.substring(0, 20) + "...");
+
+      // 1) 驗證 LINE token 並拿到 profile（呼叫 server 的 /app/verify-line）
+      const verifyRes = await fetch("/app/verify-line", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ accessToken }),
+      });
+      const verifyData = await verifyRes.json();
+      logToScreen("✅ Token 驗證結果:", verifyData);
+
+      if (verifyData.success && verifyData.profile) {
+        const profile = verifyData.profile;
+        document.getElementById("profile").style.display = "block";
+        document.getElementById("picture").src = profile.pictureUrl;
+        document.getElementById("name").textContent = profile.displayName;
+
+        // 在畫面上顯示綁定按鈕（導到 /app/start-bind?lineUserId=... ）
+        const bindArea = document.getElementById("bind-area");
+        bindArea.innerHTML = '';
+        const bindLink = document.createElement('a');
+        bindLink.className = 'btn';
+        bindLink.href = `/app/start-bind?lineUserId=${encodeURIComponent(profile.userId)}`;
+        bindLink.textContent = '🔗 點此綁定 Keycloak';
+        bindArea.appendChild(bindLink);
+
+        // 若之前已從 Keycloak 完成綁定，前端可呼叫 /app/api/bind-result 取得綁定結果並顯示
+        const br = await fetch('/app/api/bind-result');
+        const brj = await br.json();
+        if (brj && brj.ok) {
+          document.getElementById('bindResult').textContent = brj.message;
+        }
+      }
+
+      document.getElementById("result").textContent = JSON.stringify(verifyData, null, 2);
+    } catch (err) {
+      console.error("❌ LIFF 初始化錯誤:", err);
+      document.getElementById("result").textContent = "LIFF 初始化或登入錯誤：" + err.message;
+    }
+  }
+
+  function logToScreen(...args) {
+    const msg = args.map(a => (typeof a === "object" ? JSON.stringify(a, null, 2) : a)).join(" ");
+    const logEl = document.getElementById("result");
+    logEl.textContent += "\n" + msg;
+    console.log(...args);
+  }
+
+  </script>
+</body>
+</html>

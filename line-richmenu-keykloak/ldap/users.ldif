@@ -1,0 +1,30 @@
+dn: ou=people,dc=omnia,dc=com
+objectClass: organizationalUnit
+ou: people
+
+dn: uid=jeff,ou=people,dc=omnia,dc=com
+objectClass: inetOrgPerson
+objectClass: top
+cn: Jeff
+sn: Jeff
+uid: jeff
+userPassword: 123456
+description: user_level_1
+
+dn: uid=abby,ou=people,dc=omnia,dc=com
+objectClass: inetOrgPerson
+objectClass: top
+cn: Abby
+sn: Abby
+uid: abby
+userPassword: 123456
+description: user_level_2
+
+dn: uid=admin,ou=people,dc=omnia,dc=com
+objectClass: inetOrgPerson
+objectClass: top
+cn: Admin
+sn: Admin
+uid: admin
+userPassword: 123456
+description: admin
