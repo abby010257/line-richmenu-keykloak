@@ -50,6 +50,8 @@ const {
   KC_CLIENT_ID,
   KC_CLIENT_SECRET,
   KC_REDIRECT_URI,
+  KC_SERVICE_CLIENT_ID,
+  KC_SERVICE_CLIENT_SECRET,
   LDAP_URL,
   LDAP_ADMIN_DN,
   LDAP_ADMIN_PW,
@@ -169,6 +171,60 @@ async function queryStarWarsAPI(resource, id) {
   }
 }
 
+//檢查指定的 Keycloak User ID 是否仍處於啟用狀態
+async function checkKeycloakUserStatus(kcUserId) {
+    if (!kcUserId) {
+        console.error("Missing kcUserId for status check.");
+        return false;
+    }
+    try {
+        // 1. 取得服務帳號 Token (使用 client_credentials 流程)
+        const tokenUrl = `${KC_AUTH_SERVER_URL}/realms/${KC_REALM}/protocol/openid-connect/token`;
+        // 使用 client_credentials 授權類型
+        const tokenBody = {
+            grant_type: "client_credentials",
+            client_id: KC_SERVICE_CLIENT_ID,         // 服務帳號 Client ID
+            client_secret: KC_SERVICE_CLIENT_SECRET, // 服務帳號 Client Secret
+        };
+        const tokenResp = await axios.post(
+            tokenUrl,
+            qs.stringify(tokenBody), // 採用您的 qs.stringify
+            { headers: { "Content-Type": "application/x-www-form-urlencoded" } }
+        );
+        const accessToken = tokenResp.data.access_token;
+        // 2. 透過 Admin API 查詢用戶狀態
+        // 使用 Admin API (非 userinfo) 查詢特定用戶
+        const userStatusUrl = `${KC_AUTH_SERVER_URL}/admin/realms/${KC_REALM}/users/${kcUserId}`;
+        const userResp = await axios.get(
+            userStatusUrl,
+            // 採用您的 Bearer Header 風格
+            { headers: { Authorization: `Bearer ${accessToken}` } } 
+        );
+        // 3. 檢查 enabled 欄位
+        // 查詢到用戶，檢查 enabled 欄位
+        console.log("查詢到用戶userResp.data.enabled",userResp.data.enabled);
+        // return userResp.data.enabled === true;
+        return userResp.data.enabled;
+        
+    } catch (error) {
+        // 處理錯誤 (維持穩健的錯誤處理邏輯)
+        if (error.response) {
+            if (error.response.status === 404) {
+                console.warn(`[Keycloak Check] User ${kcUserId} not found (deleted).`);
+            } else if (error.response.status === 401 || error.response.status === 403) {
+                // 401/403: 權限不足，請檢查服務帳號是否被授予 view-users 角色
+                console.error('[Keycloak Check] Service account auth/permission failed. Check Admin Roles.', error.response.data);
+            } else {
+                console.error(`[Keycloak Check] API error while checking user ${kcUserId}:`, error.response.status, error.response.data);
+            }
+        } else {
+            console.error(`[Keycloak Check] Network error while checking user ${kcUserId}:`, error.message);
+        }
+        // 任何失敗都視為「非啟用」
+        return false;
+    }
+}
+
 // handleEvent / replyText 
 async function handleEvent(event) {
   const userId = event.source.userId;
@@ -176,10 +232,10 @@ async function handleEvent(event) {
 
   // --- FOLLOW：使用者加入 LINE BOT ---
   if (!row) {
-    
+    // 未綁定 → 套用 notBindingMenu（含「登入綁定」按鈕）
+    await applyRichMenuByRole(userId, "notBinding");
     if (event.type === "follow") {
-      // 未綁定 → 套用 notBindingMenu（含「登入綁定」按鈕）
-      // await applyRichMenuByRole(userId, "notBinding");
+      
       try {
         await lineClient.replyMessage(event.replyToken, [
           { type: "text", text: "您尚未綁定帳號，請點下方按鈕進行綁定。" },
@@ -205,11 +261,27 @@ async function handleEvent(event) {
     }
     
   }
-  // 已綁定 → 根據角色套用不同 RichMenu
-  // console.log("點選選單後:",userId, row.role);
-  await applyRichMenuByRole(userId, row.role);
-  
 
+  // --- Keycloak 帳號狀態檢查邏輯 ---
+  const kcUserId = row.kcUserId; 
+  console.log("handleEvent kcUserId",kcUserId);
+  // 呼叫我們新定義的輔助函數
+  const isUserActive = await checkKeycloakUserStatus(kcUserId); 
+
+  if (!isUserActive) {
+    // 帳號已被禁用 (離職) 或刪除，阻擋存取
+    console.warn(`[Auth Check] User ${userId} (kcUserId: ${kcUserId}) is no longer active. Blocking access.`);
+    
+    // 回覆無權限訊息，並「立即停止」後續所有操作
+    return replyText(
+        event.replyToken,
+        "您的帳號權限已被移除或停用，無法繼續使用本服務。如有疑問請聯繫管理員。"
+    );
+  }
+  
+  // ---已綁定 → 根據角色套用不同 RichMenu---
+  // console.log("點選選單後:",userId, row.role);
+  // await applyRichMenuByRole(userId, row.role);
   // --- MESSAGE：聊天訊息 ---
   if (event.type === "message" && event.message.type === "text") {
 
@@ -221,8 +293,49 @@ async function handleEvent(event) {
     // ====== STEP 1: RichMenu 功能指令 ======
 
     if (text === "查詢人物") {
-      userStates[userId] = "awaiting_people_id";
-      return replyText(event.replyToken, "請輸入人物 ID（純數字）。");
+      // userStates[userId] = "awaiting_people_id";
+      // return replyText(event.replyToken, "請輸入人物 ID（純數字）。");
+      // 準備 API 資訊
+      const startJobUrl = `https://cloud.uipath.com/${process.env.UIPATH_ACCOUNT_NAME}/${process.env.UIPATH_TENANT_NAME}/orchestrator_/odata/Jobs/UiPath.Server.Configuration.OData.StartJobs`;
+        
+      // 這是您在 cURL 中成功測試的 Body (使用環境變數確保參數正確)
+      const jobBody = {
+        "startInfo": {
+          "ReleaseKey": process.env.UIPATH_RELEASE_KEY,
+          "Strategy": "Specific",
+          "RobotIds": [parseInt(process.env.UIPATH_ROBOT_ID)], // 確保 Robot ID 是數字
+          "JobsCount": 0
+        }
+      };
+
+      try {
+        // 3. 準備 API Headers (直接使用 PAT)
+        const jobHeaders = {
+          // 🚨 注意：這裡直接使用您的 PAT 作為 Bearer Token
+          'Authorization': `Bearer ${process.env.UIPATH_PERSONAL_ACCESS_TOKEN}`, 
+          'X-UIPATH-OrganizationUnitId': process.env.UIPATH_FOLDER_ID,
+          'Content-Type': 'application/json'
+        };
+
+        // 4. 發送 API 請求以啟動 RPA
+        console.log('正在使用 Personal Access Token 啟動 UiPath Job...');
+        await axios.post(startJobUrl, jobBody, { headers: jobHeaders });
+
+        console.log('RPA Job 啟動成功！');
+        
+        // 5. 成功後，回覆使用者
+        return replyText(
+          event.replyToken,
+          "RPA 流程已成功啟動！"
+        );
+
+      } catch (error) {
+        console.error('Error:', error.message);
+        return replyText(
+          event.replyToken,
+          "抱歉，發生未知錯誤。"
+        );
+      }
     }
 
     if (text === "查詢星球") {
@@ -262,7 +375,6 @@ async function handleEvent(event) {
       "無法辨識您的需求。\n請點擊下方選單使用功能。"
     );
   }
-
   return;
 }
 
@@ -466,6 +578,7 @@ app.listen(PORT, async() => {
   console.log("webhookPath: ",webhookPath);
   console.log("channelAccessToken",LINE_CHANNEL_ACCESS_TOKEN);
   console.log("channelSecret",LINE_CHANNEL_SECRET);
-  console.log("111");
+  console.log("UIPATH_PERSONAL_ACCESS_TOKEN: ",process.env.UIPATH_PERSONAL_ACCESS_TOKEN);
+  
 });
 
